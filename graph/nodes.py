@@ -11,7 +11,7 @@ from pydantic import BaseModel, Field
 from tavily import TavilyClient
 
 from config.settings import LLM_MODEL, TAVILY_API_KEY
-from .state import PYMESState, BusinessInfo
+from .state import PYMESState, BusinessInfo, StrategicPlan
 
 logger = logging.getLogger(__name__)
 
@@ -83,7 +83,7 @@ Analiza el `conversation_history` y el `current_business_info`. Luego, genera un
 
 
 @tool
-def perform_market_research(query: str) -> str:
+def perform_market_research(tool_call_id: Annotated[str, InjectedToolCallId], query: str) -> Command:
     """
     Realiza una investigación de mercado utilizando una búsqueda web avanzada.
     Útil para encontrar tendencias del sector, análisis de competidores,
@@ -93,12 +93,67 @@ def perform_market_research(query: str) -> str:
         tavily = TavilyClient(api_key=TAVILY_API_KEY)
         response = tavily.search(query=query, search_depth="advanced", max_results=5)
         formatted_results = "\n".join([f"- {r['content']}" for r in response.get('results', [])])
-        return f"Resultados de la investigación de mercado para '{query}':\n{formatted_results}"
+        content = f"Resultados de la investigación de mercado para '{query}':\n{formatted_results}"
+        return Command(update={"messages": [ToolMessage(content=content, tool_call_id=tool_call_id)]})
     except Exception as e:
         logger.error(f"Error en la investigación de mercado con Tavily: {e}")
-        return "Error al realizar la investigación de mercado."
+        return Command(update={"messages": [ToolMessage(content="Error al realizar la investigación de mercado.", tool_call_id=tool_call_id)]})
 
-PYMES_TOOLS = [analyze_and_synthesize, perform_market_research]
+
+# --- Nueva Herramienta Inteligente ---
+@tool
+def create_action_and_savings_plan(tool_call_id: Annotated[str, InjectedToolCallId], initiative_summary: str, business_info: BusinessInfo) -> Command:
+    """
+    Crea un plan de acción detallado y un plan de ahorro para una iniciativa de negocio específica.
+    Usar después de que una idea ha sido validada con el usuario y se quiere pasar a la ejecución.
+    """
+    logger.info(f"Ejecutando `create_action_and_savings_plan` para la iniciativa: {initiative_summary}")
+
+    llm = ChatOpenAI(model=LLM_MODEL, temperature=0.1)  # Un poco de creatividad para los planes
+    structured_llm = llm.with_structured_output(StrategicPlan)
+
+    prompt = ChatPromptTemplate.from_messages([
+        ("system",
+         """Eres un consultor de negocios senior especializado en PYMEs. Tu tarea es tomar una iniciativa de negocio y convertirla en un `StrategicPlan` accionable.
+         El plan debe ser realista, práctico y enfocado en la autofinanciación.
+
+<Task>
+1.  **Analiza la `initiative_summary` y el `business_info`**.
+2.  **Crea un `action_plan`**: Desglosa la iniciativa en pasos lógicos y secuenciales. Estima costos y tiempos realistas para una PYME.
+3.  **Crea un `savings_plan`**: Piensa en formas creativas y prácticas en las que el negocio actual puede ahorrar dinero. Estos ahorros deben estar alineados con los costos del plan de acción. Sé específico. Para un restaurante, sugiere reducir desperdicio, optimizar compras, etc. Para un negocio de servicios, sugiere optimizar software, renegociar con proveedores, etc.
+4.  **Escribe un `summary`**: Conecta los puntos. Explica cómo los ahorros generados permitirán ejecutar los pasos del plan de acción para lograr el crecimiento deseado.
+</Task>
+
+<Context>
+**Información del Negocio:** {business_info}
+**Resumen de la Iniciativa a Planificar:** {initiative_summary}
+</Context>
+
+Asegúrate de que el plan sea motivador y empodere al dueño de la PYME."""),
+    ])
+
+    chain = prompt | structured_llm
+
+    try:
+        plan: StrategicPlan = chain.invoke({
+            "initiative_summary": initiative_summary,
+            "business_info": business_info
+        })
+
+        plan_json = plan.model_dump_json(indent=2)
+        message_content = f"Plan de acción y ahorro creado exitosamente:\n{plan_json}"
+        
+        return Command(update={
+            "messages": [ToolMessage(content=message_content, tool_call_id=tool_call_id)],
+            "current_plan": plan.model_dump()
+        })
+
+    except Exception as e:
+        logger.error(f"Error en `create_action_and_savings_plan`: {e}", exc_info=True)
+        return Command(update={"messages": [ToolMessage(content="Error al generar el plan de acción.", tool_call_id=tool_call_id)]})
+
+
+PYMES_TOOLS = [analyze_and_synthesize, perform_market_research, create_action_and_savings_plan]
 
 
 def central_orchestrator(state: PYMESState) -> Dict[str, Any]:
@@ -112,21 +167,30 @@ def central_orchestrator(state: PYMESState) -> Dict[str, Any]:
     prompt = ChatPromptTemplate.from_messages([
         ("system",
          """<Task>
-Eres KUMAK, un consultor de IA para PYMEs. Tu trabajo es ser un socio estratégico y amigable, guiando la conversación con empatía y propósito.
+Eres KUMAK, un consultor de IA para PYMEs. Tu misión es ser un socio estratégico, guiando a los emprendedores desde la ideación hasta un plan de acción concreto y autofinanciable para hacer crecer su negocio.
 </Task>
 
 <Instructions>
-1.  **Orquesta con Herramientas**: En cada turno, tu primera acción es llamar a `analyze_and_synthesize` para que procese la conversación. Si el usuario pide explícitamente una investigación, usa `perform_market_research`.
+1.  **Orquesta con Herramientas (Fase de Ideación)**:
+    -   Tu primera acción en cada turno es usar `analyze_and_synthesize` para entender el contexto.
+    -   Usa `perform_market_research` si el usuario lo solicita explícitamente para explorar ideas.
 
-2.  **Actúa sobre el Análisis (El Paso Clave)**: La herramienta `analyze_and_synthesize` te devolverá un `ToolMessage` con el resultado de su análisis, incluyendo un "Próximo tema sugerido". Tu trabajo es convertir ese tema en una respuesta humana, amigable y con propósito.
+2.  **Actúa sobre el Análisis**: La herramienta `analyze_and_synthesize` te dará un "Próximo tema sugerido". Usa este tema para profundizar en los desafíos y oportunidades del negocio, como lo has estado haciendo.
 
-3.  **Crea una Respuesta Amigable y con Propósito**:
-    -   **NUNCA** preguntes directamente el tema sugerido.
-    -   **SIEMPRE** introduce la pregunta con una frase empática que reconozca lo que el usuario acaba de decir.
-    -   **SIEMPRE** justifica por qué necesitas la información, conectándolo con sus objetivos.
-    -   **Ejemplo**: Si el tema sugerido es "Aclarar diferenciadores de la salsa secreta", una MALA respuesta sería: "¿Cuáles son las características de tu salsa secreta?". Una BUENA respuesta sería: *"Entendido, ¡una salsa secreta suena como un gran diferenciador! Para que podamos pensar juntos en cómo convertirla en tu arma principal contra la competencia, ¿podrías contarme un poco más sobre qué la hace tan especial?"*
+3.  **Transición a la Planificación (El Paso CRUCIAL)**:
+    -   Una vez que hayas ayudado al usuario a validar y aterrizar una estrategia o iniciativa clara (ej: "usar ingredientes locales", "lanzar campaña en redes sociales", "implementar programa de lealtad"), NO sigas en un bucle de ideación.
+    -   **Realiza la transición PROACTIVAMENTE**. Pregúntale al usuario si desea convertir esa idea en un plan de acción concreto.
+    -   **Ejemplo de Transición**: *"Esta idea de usar ingredientes locales suena muy prometedora y creo que tenemos una base sólida. ¿Te gustaría que trabajemos juntos en un plan de acción concreto para hacerlo realidad? Podríamos detallar los pasos, estimar costos iniciales y, lo más importante, pensar en cómo el negocio puede generar los ahorros para financiar esta iniciativa sin necesidad de préstamos."*
 
-4.  **Si no hay tema que discutir**: Si la herramienta de análisis no sugiere un nuevo tema, significa que tienes suficiente información. Es hora de actuar. Proporciona tu análisis, una recomendación o un plan de acción concreto basado en todo lo que has aprendido.
+4.  **Llama a la Herramienta de Planificación**:
+    -   Si el usuario acepta, llama a la nueva herramienta `create_action_and_savings_plan`. Deberás proporcionarle un resumen de la iniciativa.
+
+5.  **Presenta el Plan y Refínalo**:
+    -   La herramienta `create_action_and_savings_plan` te devolverá un plan estructurado.
+    -   Tu trabajo es presentar este plan al usuario de forma clara y amigable. Explica los pasos de acción, el plan de ahorro y cómo se conectan.
+    -   Invita al usuario a discutir y ajustar el plan.
+
+6.  **Cierre y Empoderamiento**: Si no hay más que planificar o discutir, resume los logros y anima al usuario a poner en marcha el plan.
 </Instructions>
 
 <Context>
