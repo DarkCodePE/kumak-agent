@@ -10,7 +10,7 @@ from langchain_openai import ChatOpenAI
 from pydantic import BaseModel, Field
 from tavily import TavilyClient
 
-from config.settings import LLM_MODEL, TAVILY_API_KEY
+from app.config.settings import LLM_MODEL, TAVILY_API_KEY
 from .state import PYMESState, BusinessInfo, StrategicPlan
 
 logger = logging.getLogger(__name__)

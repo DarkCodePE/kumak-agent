@@ -2,7 +2,7 @@
 colorama
 python-dotenv
 uvicorn
-pydantic
+pydantic>=2,<3
 fastapi
 aiokafka
 SQLAlchemy
@@ -14,35 +14,40 @@ pydantic_settings
 langchain_scrapegraph
 python-dotenv
 uvicorn
-langchain
-langchain-openai
+
+# === LANGCHAIN ECOSYSTEM ===
+# Versiones compatibles con LangChain 0.3.x
+langchain>=0.3,<0.4
+langchain-openai>=0.2,<0.3
 langsmith
+langchain-core>=0.3,<0.4
+langchain-community>=0.3,<0.4
+langchain_anthropic>=0.2,<0.3
+langchain_google_vertexai>=2,<3
+
+# === LANGGRAPH ===
+# Versión más reciente estable
+langgraph>=0.4.10
+langgraph-cli[inmem]>=0.3.3
+langgraph-checkpoint-postgres
+langgraph-prebuilt 
+# === OTRAS DEPENDENCIAS ===
 motor
 pandas
 starlette
 httpx
 asyncpg
-langchain_openai
 PyPDF2
-langchain-community
 pydantic[email]
 python-multipart
 passlib[bcrypt]
-langgraph
 pypdf
 tavily-python
-pydantic-settings
-langchain_anthropic
-langchain_google_vertexai
 poetry-core
 poetry
-langgraph-cli[inmem]
 psycopg
 psycopg_pool
-langgraph-checkpoint-postgres
 langchain_qdrant
 semantic-router
 google-api-python-client
-langchain_core
-pydantic_settings
 typing_extensions

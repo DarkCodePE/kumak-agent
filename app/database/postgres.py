@@ -1,5 +1,6 @@
 import logging
 import time
+import psycopg
 from functools import wraps
 from typing import Callable, TypeVar, Any
 
@@ -9,11 +10,16 @@ from psycopg.rows import dict_row
 from langgraph.checkpoint.postgres import PostgresSaver
 from langgraph.store.postgres import PostgresStore
 
-from config.settings import (
+from app.config.settings import (
     postgresql_connection_string,
     DB_POOL_SIZE,
     DB_CONNECTION_RETRIES,
-    DB_RETRY_DELAY
+    DB_RETRY_DELAY,
+    POSTGRES_HOST,
+    POSTGRES_PORT,
+    POSTGRES_USER,
+    POSTGRES_PASSWORD,
+    POSTGRES_DB
 )
 
 logger = logging.getLogger(__name__)
@@ -34,6 +40,39 @@ _async_connection_pool = None
 _postgres_saver = None
 _async_postgres_saver = None
 _postgres_store = None
+
+
+def create_database_if_not_exists():
+    """
+    Crea la base de datos si no existe.
+    Se conecta a la base de datos 'postgres' para crear la base de datos objetivo.
+    """
+    # Cadena de conexión a la base de datos 'postgres' (que siempre existe)
+    admin_connection_string = f"postgresql://{POSTGRES_USER}:{POSTGRES_PASSWORD}@{POSTGRES_HOST}:{POSTGRES_PORT}/postgres"
+    
+    try:
+        # Conectar a la base de datos postgres
+        with psycopg.connect(admin_connection_string, autocommit=True) as conn:
+            with conn.cursor() as cur:
+                # Verificar si la base de datos existe
+                cur.execute(
+                    "SELECT 1 FROM pg_database WHERE datname = %s",
+                    (POSTGRES_DB,)
+                )
+                
+                if not cur.fetchone():
+                    # La base de datos no existe, crearla
+                    logger.info(f"Base de datos '{POSTGRES_DB}' no existe. Creándola...")
+                    
+                    # Crear la base de datos (no se puede usar parámetros aquí)
+                    cur.execute(f'CREATE DATABASE "{POSTGRES_DB}"')
+                    logger.info(f"Base de datos '{POSTGRES_DB}' creada exitosamente")
+                else:
+                    logger.info(f"Base de datos '{POSTGRES_DB}' ya existe")
+                    
+    except Exception as e:
+        logger.error(f"Error al crear la base de datos: {str(e)}")
+        raise
 
 
 def with_retry(max_retries: int = DB_CONNECTION_RETRIES, delay: int = DB_RETRY_DELAY) -> Callable:
@@ -86,6 +125,9 @@ def get_connection_pool() -> ConnectionPool:
 
     if _connection_pool is None:
         try:
+            # Primero asegurar que la base de datos existe
+            create_database_if_not_exists()
+            
             # Create connection pool
             _connection_pool = ConnectionPool(
                 conninfo=postgresql_connection_string,
@@ -111,6 +153,9 @@ async def get_async_connection_pool() -> AsyncConnectionPool:
 
     if _async_connection_pool is None:
         try:
+            # Primero asegurar que la base de datos existe
+            create_database_if_not_exists()
+            
             # Create async connection pool
             _async_connection_pool = AsyncConnectionPool(
                 conninfo=postgresql_connection_string,
@@ -198,6 +243,9 @@ def get_postgres_store() -> PostgresStore:
 
             # Create PostgresStore
             _postgres_store = PostgresStore(pool)
+
+            # Initialize tables
+            _postgres_store.setup()
             logger.info("PostgreSQL store initialized successfully")
         except Exception as e:
             print(e)
@@ -209,19 +257,19 @@ def get_postgres_store() -> PostgresStore:
 
 def check_postgres_connection() -> bool:
     """
-    Check if the PostgreSQL connection is working.
-
+    Check if PostgreSQL connection is working.
+    
     Returns:
-        bool: True if the connection is working, False otherwise.
+        bool: True if connection is successful, False otherwise
     """
     try:
         pool = get_connection_pool()
         with pool.connection() as conn:
-            cursor = conn.cursor()
-            # Usamos un alias para asegurar que la clave del diccionario sea conocida
-            cursor.execute("SELECT 1 AS one")
-            result = cursor.fetchone()
-            return result is not None and result.get("one") == 1
+            with conn.cursor() as cur:
+                cur.execute("SELECT 1")
+                result = cur.fetchone()
+                logger.info("PostgreSQL connection check successful")
+                return result is not None
     except Exception as e:
         logger.error(f"PostgreSQL connection check failed: {str(e)}")
         return False
@@ -229,27 +277,26 @@ def check_postgres_connection() -> bool:
 
 def close_postgres_connections() -> None:
     """
-    Close all PostgreSQL connections.
-    Called on application shutdown.
+    Close all PostgreSQL connections and clean up resources.
     """
     global _connection_pool, _async_connection_pool, _postgres_saver, _async_postgres_saver, _postgres_store
 
     try:
-        if _connection_pool is not None:
+        if _connection_pool:
             _connection_pool.close()
+            _connection_pool = None
             logger.info("PostgreSQL connection pool closed")
 
-        if _async_connection_pool is not None:
-            # Close async pool
-            import asyncio
-            asyncio.create_task(_async_connection_pool.close())
-            logger.info("Async PostgreSQL connection pool closing")
-    except Exception as e:
-        logger.error(f"Error closing PostgreSQL connection pools: {str(e)}")
+        if _async_connection_pool:
+            _async_connection_pool.close()
+            _async_connection_pool = None
+            logger.info("Async PostgreSQL connection pool closed")
 
-    # Reset singleton instances
-    _connection_pool = None
-    _async_connection_pool = None
-    _postgres_saver = None
-    _async_postgres_saver = None
-    _postgres_store = None
+        # Reset singletons
+        _postgres_saver = None
+        _async_postgres_saver = None
+        _postgres_store = None
+
+        logger.info("All PostgreSQL connections closed successfully")
+    except Exception as e:
+        logger.error(f"Error closing PostgreSQL connections: {str(e)}")

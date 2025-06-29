@@ -104,7 +104,7 @@ async def shutdown_event():
 if __name__ == "__main__":
     logger.info(f"Starting server on {API_HOST}:{API_PORT} with {API_WORKERS} workers")
     uvicorn.run(
-        "app.main:app",
+        "main:app",
         host=API_HOST,
         port=API_PORT,
         workers=API_WORKERS,

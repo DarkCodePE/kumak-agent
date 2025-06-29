@@ -22,7 +22,7 @@ DB_RETRY_DELAY = int(os.getenv("DB_RETRY_DELAY", "5"))  # seconds
 
 # API settings
 API_HOST = os.getenv("API_HOST", "0.0.0.0")
-API_PORT = int(os.getenv("API_PORT", "9027"))
+API_PORT = int(os.getenv("API_PORT", "9040"))
 API_WORKERS = int(os.getenv("API_WORKERS", "2"))
 
 # LLM settings
@@ -54,3 +54,17 @@ def get_async_connection_string() -> str:
 # Connection strings as properties
 postgresql_connection_string = get_sync_connection_string()
 postgresql_async_connection_string = get_async_connection_string()
+
+# Exportar variables individuales para la creación de base de datos
+__all__ = [
+    'postgresql_connection_string',
+    'postgresql_async_connection_string', 
+    'POSTGRES_HOST',
+    'POSTGRES_PORT', 
+    'POSTGRES_USER',
+    'POSTGRES_PASSWORD',
+    'POSTGRES_DB',
+    'DB_POOL_SIZE',
+    'DB_CONNECTION_RETRIES',
+    'DB_RETRY_DELAY'
+]
