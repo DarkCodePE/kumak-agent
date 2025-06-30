@@ -378,8 +378,6 @@ async def enhanced_synthesizer_node(state: ResearchState) -> Dict[str, Any]:
 
 # --- Enrutamiento Condicional ---
 
-
-
 def map_follow_up_queries(state: ResearchState) -> List[Send]:
     """Mapea consultas de seguimiento basadas en evaluación de calidad."""
     max_iterations = 3
