@@ -1,5 +1,6 @@
 import logging
 import json
+import asyncio
 from typing import Dict, Any, List, Optional, Annotated
 
 from langchain_core.messages import AIMessage, ToolMessage, BaseMessage
@@ -11,9 +12,13 @@ from pydantic import BaseModel, Field
 from tavily import TavilyClient
 
 from app.config.settings import LLM_MODEL, TAVILY_API_KEY
+from app.graph.research_graph import create_research_graph, create_enhanced_research_graph
 from .state import PYMESState, BusinessInfo, StrategicPlan
 
 logger = logging.getLogger(__name__)
+
+# --- Instancia del Subgrafo de Investigación ---
+# Se crea dinámicamente cuando se necesita para evitar problemas de importación circular
 
 
 # --- Modelo de Salida para la Herramienta de Análisis ---
@@ -47,9 +52,23 @@ def analyze_and_synthesize(tool_call_id: Annotated[str, InjectedToolCallId], con
 
 <Task>
 Analiza el `conversation_history` y el `current_business_info`. Luego, genera una instancia de `AnalysisResult`.
-1.  **`business_info_update`**: Extrae datos nuevos o actualizados del último mensaje del usuario.
-2.  **`key_insights_for_memory`**: Identifica "verdades fundamentales" para recordar a largo plazo.
-3.  **`next_topic_to_discuss`**: Basado en el contexto, determina el SIGUIENTE TEMA ESTRATÉGICO a discutir. NO formules una pregunta, solo el tema. Ejemplos: "Aclarar las características de la salsa secreta", "Explorar estrategias de marketing actuales". Si no se necesita más información, déjalo en blanco.
+
+1.  **`business_info_update`**: 
+    - SOLO extrae información nueva o actualizada del último mensaje del usuario
+    - SOLO incluye los campos que realmente tienen información nueva
+    - Si no hay información nueva del negocio, deja este campo como `null`
+    - Ejemplo: Si el usuario menciona "tengo una pizzería", solo incluye `{{"business_name": "pizzería", "industry": "restaurantes"}}`
+
+2.  **`key_insights_for_memory`**: 
+    - Identifica "verdades fundamentales" para recordar a largo plazo
+    - Solo insights realmente importantes, no información básica
+    - Si no hay insights significativos, deja como lista vacía
+
+3.  **`next_topic_to_discuss`**: 
+    - Basado en el contexto, determina el SIGUIENTE TEMA ESTRATÉGICO a discutir
+    - NO formules una pregunta, solo el tema
+    - Ejemplos: "Aclarar las características de la salsa secreta", "Explorar estrategias de marketing actuales"
+    - Si no se necesita más información, deja en blanco
 </Task>
 
 <Context>
@@ -98,6 +117,71 @@ def perform_market_research(tool_call_id: Annotated[str, InjectedToolCallId], qu
     except Exception as e:
         logger.error(f"Error en la investigación de mercado con Tavily: {e}")
         return Command(update={"messages": [ToolMessage(content="Error al realizar la investigación de mercado.", tool_call_id=tool_call_id)]})
+
+
+
+@tool
+async def deep_market_research(topic: str) -> str:
+    """
+    Ejecuta una investigación de mercado profunda usando el subgrafo especializado.
+    Utiliza un patrón Map-Reduce avanzado con evaluación de calidad y múltiples iteraciones.
+    
+    Args:
+        topic: El tema específico a investigar en profundidad
+        
+    Returns:
+        Un informe ejecutivo estructurado y detallado con análisis, insights y recomendaciones
+    """
+    # Crear el subgrafo mejorado
+    research_graph = create_enhanced_research_graph()
+    
+    try:
+        # Ejecutar el grafo de investigación con el tema proporcionado
+        logger.info(f"[Deep Research] Iniciando investigación profunda para: {topic}")
+        
+        # Inicializar el estado con todos los campos requeridos
+        initial_state = {
+            "topic": topic,
+            "search_results": []
+        }
+        
+        result = await research_graph.ainvoke(initial_state)
+        
+        # Extraer el informe final del resultado
+        final_report = result.get("report")
+        if not final_report:
+            return "Error: No se pudo generar el informe de investigación."
+        
+        # Formatear el informe de manera profesional
+        formatted_report = f"""# {final_report.title}
+
+## Resumen Ejecutivo
+{final_report.executive_summary}
+
+## Análisis Detallado
+{final_report.detailed_analysis}
+
+## Insights Clave
+{chr(10).join([f"• {insight}" for insight in final_report.key_insights])}
+
+## Recomendaciones
+{chr(10).join([f"{i+1}. {rec}" for i, rec in enumerate(final_report.recommendations)])}
+
+## Metodología
+{final_report.methodology}
+
+## Fuentes y Calidad de la Información
+{final_report.sources_summary}
+
+---
+*Informe generado mediante investigación web avanzada con análisis automatizado de calidad*"""
+
+        logger.info(f"[Deep Research] Investigación completada exitosamente. Informe generado con {len(final_report.key_insights)} insights y {len(final_report.recommendations)} recomendaciones.")
+        return formatted_report
+        
+    except Exception as e:
+        logger.error(f"Error en investigación profunda: {e}")
+        return f"Error al ejecutar la investigación profunda: {str(e)}"
 
 
 # --- Nueva Herramienta Inteligente ---
@@ -153,7 +237,7 @@ Asegúrate de que el plan sea motivador y empodere al dueño de la PYME."""),
         return Command(update={"messages": [ToolMessage(content="Error al generar el plan de acción.", tool_call_id=tool_call_id)]})
 
 
-PYMES_TOOLS = [analyze_and_synthesize, perform_market_research, create_action_and_savings_plan]
+PYMES_TOOLS = [analyze_and_synthesize, deep_market_research, create_action_and_savings_plan, perform_market_research]
 
 
 def central_orchestrator(state: PYMESState) -> Dict[str, Any]:
@@ -167,30 +251,45 @@ def central_orchestrator(state: PYMESState) -> Dict[str, Any]:
     prompt = ChatPromptTemplate.from_messages([
         ("system",
          """<Task>
-Eres KUMAK, un consultor de IA para PYMEs. Tu misión es ser un socio estratégico, guiando a los emprendedores desde la ideación hasta un plan de acción concreto y autofinanciable para hacer crecer su negocio.
+Eres KUMAK, un consultor de IA para PYMEs especializado en estrategias de crecimiento basadas en datos. Tu misión es ser un socio estratégico que guía a los emprendedores desde la ideación hasta un plan de acción concreto y autofinanciable, utilizando investigación de mercado avanzada y análisis profundo.
 </Task>
 
 <Instructions>
-1.  **Orquesta con Herramientas (Fase de Ideación)**:
-    -   Tu primera acción en cada turno es usar `analyze_and_synthesize` para entender el contexto.
-    -   Usa `perform_market_research` si el usuario lo solicita explícitamente para explorar ideas.
+1.  **Responde Naturalmente**: Mantén una conversación natural, adaptativa y basada en evidencia. Evalúa cada situación única y responde de manera inteligente.
 
-2.  **Actúa sobre el Análisis**: La herramienta `analyze_and_synthesize` te dará un "Próximo tema sugerido". Usa este tema para profundizar en los desafíos y oportunidades del negocio, como lo has estado haciendo.
+2.  **Sistema de Herramientas Avanzado**:
+    
+    **Investigación Profunda (`deep_market_research`)**:
+    - **Cuándo usar**: Para consultas estratégicas que requieren análisis exhaustivo y basado en datos
+    - **Ejemplos ideales**: 
+      * "Analizar el mercado de cafeterías de especialidad en Lima"
+      * "Investigar tendencias en delivery de comida saludable"
+      * "Estudiar estrategias digitales exitosas para restaurantes"
+      * "Explorar oportunidades en el sector de productos orgánicos"
+    - **Qué obtienes**: Informes ejecutivos con resumen, análisis detallado, insights clave, recomendaciones accionables y metodología
 
-3.  **Transición a la Planificación (El Paso CRUCIAL)**:
-    -   Una vez que hayas ayudado al usuario a validar y aterrizar una estrategia o iniciativa clara (ej: "usar ingredientes locales", "lanzar campaña en redes sociales", "implementar programa de lealtad"), NO sigas en un bucle de ideación.
-    -   **Realiza la transición PROACTIVAMENTE**. Pregúntale al usuario si desea convertir esa idea en un plan de acción concreto.
-    -   **Ejemplo de Transición**: *"Esta idea de usar ingredientes locales suena muy prometedora y creo que tenemos una base sólida. ¿Te gustaría que trabajemos juntos en un plan de acción concreto para hacerlo realidad? Podríamos detallar los pasos, estimar costos iniciales y, lo más importante, pensar en cómo el negocio puede generar los ahorros para financiar esta iniciativa sin necesidad de préstamos."*
+    **Análisis Conversacional (`analyze_and_synthesize`)**:
+    - **Cuándo usar**: SOLO cuando necesites extraer insights de conversaciones largas o análisis de información compleja ya disponible
+    - NO uses para investigación externa - usa `deep_market_research` en su lugar
 
-4.  **Llama a la Herramienta de Planificación**:
-    -   Si el usuario acepta, llama a la nueva herramienta `create_action_and_savings_plan`. Deberás proporcionarle un resumen de la iniciativa.
+    **Planificación Estratégica (`create_action_and_savings_plan`)**:
+    - **Cuándo usar**: Cuando el usuario está listo para convertir una estrategia validada en pasos concretos
 
-5.  **Presenta el Plan y Refínalo**:
-    -   La herramienta `create_action_and_savings_plan` te devolverá un plan estructurado.
-    -   Tu trabajo es presentar este plan al usuario de forma clara y amigable. Explica los pasos de acción, el plan de ahorro y cómo se conectan.
-    -   Invita al usuario a discutir y ajustar el plan.
+3.  **Flujo de Trabajo Inteligente**:
+    -   **Evalúa la Consulta**: ¿Necesitas datos externos actualizados para dar una respuesta de calidad? Si es así, usa `deep_market_research` PRIMERO.
+    -   **Investigación Estratégica**: Para temas complejos de negocio, obtén información de mercado ANTES de dar consejos generales.
+    -   **Consejos Basados en Datos**: Utiliza los hallazgos de investigación para dar recomendaciones específicas y respaldadas por evidencia.
 
-6.  **Cierre y Empoderamiento**: Si no hay más que planificar o discutir, resume los logros y anima al usuario a poner en marcha el plan.
+4.  **Transición Proactiva a Planificación**:
+    -   Una vez que hayas validado una estrategia con investigación y el usuario muestre interés, NO prolonges la ideación.
+    -   **Ejemplo de Transición Basada en Datos**: *"Basándome en la investigación que acabamos de realizar sobre el mercado de X, veo que tienes una oportunidad sólida. Los datos muestran [insight específico] y esto se alinea perfectamente con tu negocio. ¿Te gustaría que convirtamos esto en un plan de acción concreto con pasos específicos y un plan de autofinanciación?"*
+
+5.  **Presentación de Resultados**:
+    -   Cuando uses `deep_market_research`, presenta los hallazgos de manera digestible y conecta directamente con la situación del usuario.
+    -   Enfatiza insights únicos y recomendaciones accionables.
+    -   Usa la investigación para fundamentar todos tus consejos posteriores.
+
+6.  **Empoderamiento con Evidencia**: Proporciona confianza al usuario mostrando que sus decisiones están respaldadas por datos de mercado reales y análisis profesional.
 </Instructions>
 
 <Context>
