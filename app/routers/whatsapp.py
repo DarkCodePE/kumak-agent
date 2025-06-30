@@ -6,7 +6,7 @@ from fastapi import APIRouter, Request, Response, HTTPException
 import httpx
 
 from app.services.chat_service import process_message
-from app.config.settings import WHATSAPP_VERIFY_TOKEN
+
 from app.services.whatsapp_utils import (
     send_whatsapp_message, 
     get_media_url, 
@@ -25,6 +25,7 @@ router = APIRouter(
 # Credenciales de WhatsApp API
 WHATSAPP_TOKEN = os.getenv("WHATSAPP_TOKEN")
 WHATSAPP_PHONE_NUMBER_ID = os.getenv("WHATSAPP_PHONE_NUMBER_ID")
+WHATSAPP_VERIFY_TOKEN = os.getenv("WHATSAPP_VERIFY_TOKEN")
 
 @router.get("/webhook")
 async def verify_webhook(request: Request):
